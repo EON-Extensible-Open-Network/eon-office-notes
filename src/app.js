@@ -3,7 +3,7 @@
 //
 // EON Notes' interface. No network of its own; everything through the host.
 // Note text is the person's, but it can be imported from anywhere, so it is
-// rendered by building DOM nodes -- never through innerHTML.
+// rendered by building DOM nodes, never by parsing it as markup.
 
 "use strict";
 
