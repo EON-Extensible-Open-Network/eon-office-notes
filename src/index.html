@@ -1,0 +1,82 @@
+<!doctype html>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 EON contributors
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EON Notes</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="banner" class="banner" role="alert" hidden>
+    <p id="banner-text"></p>
+    <button id="retry" data-i18n="retry">Try again</button>
+  </div>
+
+  <div class="layout" id="layout" hidden>
+    <nav class="sidebar" data-i18n-label="notes.label" aria-label="Notes">
+      <div class="row">
+        <button id="new-note" data-i18n="new">New note</button>
+        <button id="today" class="secondary" data-i18n="today">Today</button>
+      </div>
+      <label for="search" class="sr-only" data-i18n="search.label">Search notes</label>
+      <input id="search" type="search" autocomplete="off" data-i18n-placeholder="search.placeholder">
+      <label for="notebook-filter" class="sr-only" data-i18n="notebook.filter">Show notebook</label>
+      <select id="notebook-filter"></select>
+      <p id="note-count" class="status" aria-live="polite"></p>
+      <ul id="note-list" role="listbox" tabindex="0" data-i18n-label="notes.label" aria-label="Notes"></ul>
+      <details>
+        <summary data-i18n="import.label">Import a folder of Markdown files</summary>
+        <form id="import-form">
+          <label for="import-path" class="sr-only" data-i18n="import.label">Import</label>
+          <input id="import-path" type="text" spellcheck="false" data-i18n-placeholder="import.placeholder">
+          <button type="submit" data-i18n="import.go">Import</button>
+        </form>
+      </details>
+    </nav>
+
+    <main id="main" tabindex="-1">
+      <p id="empty" class="muted" hidden data-i18n="empty"></p>
+      <div id="editor" hidden>
+        <div class="editor-head">
+          <label for="note-title" class="sr-only" data-i18n="title.label">Title</label>
+          <input id="note-title" type="text" autocomplete="off" data-i18n-placeholder="title.placeholder">
+          <label for="note-notebook" class="sr-only" data-i18n="notebook.label">Notebook</label>
+          <input id="note-notebook" type="text" autocomplete="off" list="notebooks" data-i18n-placeholder="notebook.label">
+          <datalist id="notebooks"></datalist>
+        </div>
+        <div class="editor-head">
+          <div role="tablist" data-i18n-label="mode.label" aria-label="View">
+            <button role="tab" id="mode-edit" aria-selected="true" aria-controls="note-body" data-i18n="mode.edit">Edit</button>
+            <button role="tab" id="mode-preview" aria-selected="false" aria-controls="note-preview" tabindex="-1" data-i18n="mode.preview">Preview</button>
+          </div>
+          <button id="save" data-i18n="save">Save</button>
+          <button id="delete" class="danger" data-i18n="delete">Delete</button>
+          <span id="save-status" class="status" role="status" aria-live="polite"></span>
+        </div>
+        <div id="delete-confirm" hidden>
+          <p id="delete-question"></p>
+          <button id="delete-yes" class="danger" data-i18n="delete">Delete</button>
+          <button id="delete-no" class="secondary" data-i18n="cancel">Cancel</button>
+        </div>
+        <label for="note-body" class="sr-only" data-i18n="body.label">Note (Markdown)</label>
+        <textarea id="note-body" spellcheck="true"></textarea>
+        <div id="note-preview" hidden tabindex="0"></div>
+      </div>
+    </main>
+
+    <aside data-i18n-label="backlinks" aria-label="Linked from">
+      <h2 data-i18n="backlinks">Linked from</h2>
+      <ul id="backlinks"></ul>
+      <h2 data-i18n="tags">Tags</h2>
+      <div id="tags"></div>
+    </aside>
+  </div>
+
+  <div id="announcer" class="sr-only" aria-live="assertive"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "manifest": 0,
+  "id": "org.eon.office.notes",
+  "name": "EON Notes",
+  "version": "0.1.0",
+  "api": { "min": 0, "max": 0 },
+  "description": "Markdown notes with notebooks, tags, backlinks and daily notes. Offers other applications a way to open or create a note.",
+  "entry": { "command": "eon-notes" },
+  "capabilities": ["storage", "search.index", "search.query", "events.publish"],
+  "provides": [
+    { "method": "open", "description": "Show a note by id." },
+    { "method": "focus", "description": "Bring the Notes window to the front." },
+    { "method": "note.create", "description": "Create a note from `title` and Markdown `body`; returns its `id`." }
+  ],
+  "publishes": ["activity", "note.created"],
+  "restart": "never"
+}
