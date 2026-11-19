@@ -10,7 +10,8 @@ SPDX-FileCopyrightText: 2026 EON contributors
 import that takes a folder of Markdown files — an Obsidian-style vault — with its links
 intact. The first application of [EON Office](https://github.com/EON-Extensible-Open-Network/eon-docs/blob/main/office/roadmap.md)'s Wave 1.
 
-> **0.1.0** — protocol `v0`, early. Windows is where the window is checked end to end; Linux
+> **0.2.0** — formats `v0`, early. **Stands alone:** download it, run it, write. Nothing else
+> has to be installed or running. Windows is where the window is checked end to end; Linux
 > and macOS build and pass the same tests without a window.
 
 ## What it does
@@ -23,7 +24,7 @@ intact. The first application of [EON Office](https://github.com/EON-Extensible-
   to create it. Titles match the way search does: `[[istanbul trip]]` finds "İstanbul Trip".
 - **Notebooks** (a field, with suggestions), **tags** (`#word` in the text), **Today** (one
   note per date, in the *Daily* notebook).
-- **Search** through the EON Office core, Turkish-folded (`ISTANBUL` finds "İstanbul").
+- **Search**, Turkish-folded (`ISTANBUL` finds "İstanbul").
 - **Import a vault**: one note per `.md` file, titled by its file name, in a notebook named
   after its folder; hidden folders (`.obsidian`, `.git`) skipped. Bodies are kept as
   written, so links keep working — measured: a 1,000-note vault imports in about 3 s with
@@ -32,35 +33,39 @@ intact. The first application of [EON Office](https://github.com/EON-Extensible-
   your text stays on screen, and nothing is merged behind your back.
 - **Keyboard throughout:** Ctrl+N new note, Ctrl+S save, arrows in the list, Enter to the
   text, Edit/Preview as tabs. Follows the language, theme, text size, contrast and motion
-  preferences set in EON Launcher, live.
+  preferences shared by EON Office applications, live.
+- **One window.** Starting Notes again — or following a link to a note — brings the open
+  window forward instead of opening a second one.
 
-**For other applications** (through the core, if you allow them `call:org.eon.office.notes`):
-`open` a note by id, `focus` the window, `note.create` from a title and Markdown. Notes
-announces what you do with a note (`activity`, title only) so EON Launcher can show it under
-*Recent*.
+**With other EON Office applications** (all optional): `eon-office://org.eon.office.notes/<id>`
+opens a note, from any application that links to it. Notes adds what you open and edit to
+the shared *Recent* list — titles only, never the text.
 
-**What it asks for:** keep its data on this device (`storage`), make its notes searchable to
-itself (`search.index`, private), search (`search.query`), announce changes
+**What it asks for:** keep its data on this device (`storage`), make its notes searchable
+(`search.index`, private to Notes), search (`search.query`), add titles to your recent list
 (`events.publish`). Nothing else.
 
 ## Install
 
-EON Launcher → *Get applications* → *Include previews* → EON Notes. Or from a release:
-see its notes. EON Notes needs the EON Office core running (EON Launcher starts it).
+Download `eon-notes` from a release and run it — see the release notes for checksums. Or,
+with EON Launcher: *Get applications* → *Include previews* → EON Notes. Your notes live in
+the EON Office folder of your user profile (`%LOCALAPPDATA%\EON\Office` on Windows), so a
+newer version finds them.
 
 ## Develop
 
 ```
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-EON_OFFICE_CORE_BIN=/path/to/eon-office-core cargo test -- --include-ignored
-node tools/ui-check.mjs --notes target/debug/eon-notes.exe --core /path/to/eon-office-core.exe --shots shots
+cargo test
+node tools/ui-check.mjs --notes target/debug/eon-notes.exe --shots shots
 ```
 
-`tests/notes.rs` runs Notes against a real core, including the 1,000-note vault import.
-`tools/ui-check.mjs` has the core install and launch Notes, then drives the real window
-through DevTools: create, type, save, preview, follow a link, backlinks, tags, keyboard
-navigation, search, Today, a `note.create` from another application, delete, live
+`tests/notes.rs` runs Notes on the EON Office library in a private home folder, including
+the 1,000-note vault import and a shared file from a newer version. `tools/ui-check.mjs`
+starts Notes on its own and drives the real window through DevTools: create, type, save,
+preview, follow a link, backlinks, tags, keyboard navigation, search, Today, an
+`eon-office://` link handed to the running window by a second start, delete, live
 preferences, and an accessible name for every control.
 
 Licence `GPL-3.0-or-later` with the [EON Module ABI Exception](LICENSE-EXCEPTION.md).

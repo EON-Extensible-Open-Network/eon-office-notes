@@ -2,23 +2,21 @@
 // SPDX-FileCopyrightText: 2026 EON contributors
 //
 // Drives the real EON Notes window through the WebView2 DevTools protocol.
-// The core is started in a private home, Notes is installed and launched by
-// the core -- as a person's launcher would -- and the window is checked.
+// Notes is started on its own in a private EON Office home -- nothing else is
+// installed or running, which is the point -- and the window is checked.
 // No dependencies (Node 22+), Windows, debug build of Notes.
 //
-//   node tools/ui-check.mjs --notes <eon-notes.exe> --core <eon-office-core.exe> [--shots <dir>]
+//   node tools/ui-check.mjs --notes <eon-notes.exe> [--shots <dir>]
 
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
-import { createConnection } from "node:net";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const arg = (name) => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] : undefined; };
 const notesExe = arg("--notes") && resolve(arg("--notes"));
-const coreExe = arg("--core") && resolve(arg("--core"));
 const shots = arg("--shots");
-if (!notesExe || !coreExe) { console.error("usage: node tools/ui-check.mjs --notes <exe> --core <exe> [--shots <dir>]"); process.exit(2); }
+if (!notesExe) { console.error("usage: node tools/ui-check.mjs --notes <exe> [--shots <dir>]"); process.exit(2); }
 if (shots) mkdirSync(shots, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -30,27 +28,11 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures++;
 };
 
-function owner() {
-  const endpoint = JSON.parse(readFileSync(join(home, "runtime", "endpoint.json"), "utf8"));
-  const [host, p] = endpoint.address.split(":");
-  const socket = createConnection({ host, port: Number(p) });
-  let buffer = ""; let next = 1; const waiting = new Map();
-  socket.setEncoding("utf8");
-  socket.on("data", (chunk) => {
-    buffer += chunk; let at;
-    while ((at = buffer.indexOf("\n")) >= 0) {
-      const m = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
-      if (!m.method && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-    }
-  });
-  const call = (method, params = {}) => new Promise((ok, no) => {
-    const id = next++;
-    waiting.set(id, (m) => (m.error ? no(m.error) : ok(m.result)));
-    socket.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-  });
-  const token = readFileSync(join(home, "runtime", "owner.token"), "utf8").trim();
-  const ready = new Promise((r) => socket.on("connect", r)).then(() => call("session.hello", { token }));
-  return { call, ready, close: () => socket.destroy() };
+const env = { ...process.env, EON_OFFICE_HOME: home, EON_WEBVIEW_ARGS: `--remote-debugging-port=${port}` };
+// A shared preference changed elsewhere -- as the launcher would.
+function setPref(key, value) {
+  const r = spawnSync(notesExe, ["--set-pref", key, JSON.stringify(value)], { env, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`--set-pref ${key}: ${r.stderr}`);
 }
 
 let cdp;
@@ -100,29 +82,19 @@ async function shot(name) {
   writeFileSync(join(shots, `notes-${name}.png`), Buffer.from(r.result.data, "base64"));
 }
 
-const core = spawn(coreExe, ["serve", "--home", home], {
-  env: { ...process.env, EON_WEBVIEW_ARGS: `--remote-debugging-port=${port}` },
-  stdio: "ignore",
-});
-let o;
+let notes;
 try {
   console.log("EON Notes interface check");
-  for (let i = 0; i < 100 && !existsSync(join(home, "runtime", "endpoint.json")); i++) await sleep(100);
-  o = owner();
-  await o.ready;
-  await o.call("prefs.set", { key: "locale", value: "en" });
-  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
-  manifest.entry = { command: notesExe };
-  await o.call("apps.install", { manifest, grant: manifest.capabilities });
-  await o.call("apps.launch", { app: manifest.id });
+  setPref("locale", "en");
+  notes = spawn(notesExe, [], { env, stdio: "ignore" });
   cdp = await devtools();
-  // The core starts Notes in the background, and Windows does not let a
-  // background process take the foreground. A webview without focus drops
-  // synthetic key presses now and then; focus emulation makes the page
-  // behave as focused without touching what the person has in front of them.
+  // Started from a script, the window cannot take the foreground, and a
+  // webview without focus drops synthetic key presses now and then; focus
+  // emulation makes the page behave as focused without touching what the
+  // person has in front of them.
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
 
-  check("the window connects to the core and shows an empty notebook", await until(`document.body.dataset.ready === '1' && !document.getElementById('layout').hidden && !document.getElementById('empty').hidden`, 20000));
+  check("the window opens on its own and shows an empty notebook", await until(`document.body.dataset.ready === '1' && !document.getElementById('layout').hidden && !document.getElementById('empty').hidden`, 20000));
   await shot("01-empty");
   check("the search box is one line high", await js(`document.getElementById('search').getBoundingClientRect().height < 60`));
 
@@ -177,21 +149,29 @@ try {
   await js(`document.getElementById('today').click()`);
   check("Today opens the daily note", await until(`/^\\d{4}-\\d{2}-\\d{2}$/.test(document.getElementById('note-title').value) && document.getElementById('note-notebook').value === 'Daily'`));
 
-  // Another application asks Notes to create and show a note, through the core.
-  const created = await o.call("apps.call", { app: manifest.id, method: "note.create", params: { title: "From Tasks", body: "Linked from a task." } });
-  check("note.create from another app opens the new note", await until(`document.getElementById('note-title').value === 'From Tasks'`) && !!created.id);
+  // Another application opens a note with a link: a second start of Notes
+  // hands it to this window and exits, so there is never a second window.
+  const packing = await js(`(async () => (await window.__TAURI__.core.invoke('list')).notes.find(n => n.title === 'Packing').id)()`);
+  const second = spawn(notesExe, [`eon-office://org.eon.office.notes/${packing}`], { env, stdio: "ignore" });
+  const exited = await new Promise((done) => { const timer = setTimeout(() => done(false), 15000); second.on("exit", () => { clearTimeout(timer); done(true); }); });
+  check("a link opens the note in the running window", await until(`document.getElementById('note-title').value === 'Packing'`, 15000));
+  check("the second start exits instead of opening a second window", exited);
 
   // Delete asks first.
+  await js(`document.getElementById('today').click()`);
+  await until(`document.getElementById('note-notebook').value === 'Daily'`);
+  const daily = await js(`document.getElementById('note-title').value`);
   await js(`document.getElementById('delete').click()`);
   check("Delete asks first", await until(`!document.getElementById('delete-confirm').hidden && document.activeElement.id === 'delete-no'`));
   await js(`document.getElementById('delete-yes').click()`);
-  check("confirming deletes the note", await until(`!document.getElementById('note-list').textContent.includes('From Tasks')`));
+  check("confirming deletes the note", await until(`![...document.querySelectorAll('#note-list li')].some(li => li.textContent.includes(${JSON.stringify(daily)}))`));
+  check("with no note open, the side panel does not describe the deleted one", await until(`document.querySelector('aside').hidden && document.getElementById('backlinks').children.length === 0`));
 
-  // Preferences from the launcher apply here too.
-  await o.call("prefs.set", { key: "locale", value: "tr" });
+  // Preferences changed elsewhere apply here too.
+  setPref("locale", "tr");
   check("a language change reaches Notes", await until(`document.getElementById('new-note').textContent === 'Yeni not'`));
   check("text the page builds is re-built in the new language", await until(`document.getElementById('note-count').textContent.endsWith(' not') && document.getElementById('notebook-filter').options[0].textContent === 'Tüm defterler'`));
-  await o.call("prefs.set", { key: "font_scale", value: 1.25 });
+  setPref("font_scale", 1.25);
   check("text size reaches Notes", await until(`getComputedStyle(document.documentElement).getPropertyValue('--scale').trim() === '1.25'`));
   await shot("04-turkish");
 
@@ -205,11 +185,9 @@ try {
   failures++;
   console.error(`  FAIL  ${error.stack || error}`);
 } finally {
-  try { await o?.call("core.shutdown"); } catch { /* gone */ }
-  o?.close();
   cdp?.close();
+  try { notes?.kill(); } catch { /* gone */ }
   await sleep(1500);
-  try { core.kill(); } catch { /* gone */ }
   try { rmSync(home, { recursive: true, force: true }); } catch { /* in use */ }
 }
 console.log(failures ? `\n${failures} check(s) failed.` : "\nall checks passed");

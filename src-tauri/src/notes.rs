@@ -4,21 +4,23 @@
 // Additional permission under GNU GPL version 3 section 7:
 // see LICENSE-EXCEPTION.md (EON Module ABI Exception 1.0).
 
-//! Notes, kept in the EON Office core.
+//! Notes, kept with the EON Office library.
 //!
-//! A note is a document in the core's `notes` collection:
+//! A note is a document in this application's `notes` collection:
 //! `{ title, body (Markdown), notebook, tags, created, updated }`. Links are
 //! `[[Title]]` or `[[Title|shown text]]` and resolve by title, compared the
 //! way search compares (Turkish-safe folding), so `[[istanbul]]` finds
 //! "İstanbul". Tags are the `#words` in the body. Every save puts the note in
-//! the core's search index (private to Notes) and announces an `activity`
-//! event with the title only.
+//! the shared search index (private to Notes) and the person's recent list,
+//! with the title only.
 
-use eon_office_sdk::{Client, Error};
+use eon_office_core::manifest::Manifest;
+use eon_office_core::{links as eon_links, AppContext, Home};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub const COLLECTION: &str = "notes";
 const MAX_IMPORT_FILES: usize = 20_000;
@@ -30,13 +32,11 @@ fn fail(code: &str, message: impl Into<String>) -> Value {
     json!({ "code": code, "message": message.into() })
 }
 
-fn sdk<T>(result: Result<T, Error>) -> Result<T, Value> {
+/// A library error as the interface sees it: `{ code, message, data }`.
+pub fn core<T>(result: eon_office_core::Result<T>) -> Result<T, Value> {
     result.map_err(|e| {
-        let mut out = fail(e.code(), e.to_string());
-        if let Error::Protocol { data, .. } = &e {
-            out["data"] = data.clone();
-        }
-        out
+        let error = e.to_json();
+        json!({ "code": error["data"]["code"], "message": error["message"], "data": error["data"] })
     })
 }
 
@@ -132,25 +132,43 @@ fn new_id() -> String {
 }
 
 pub struct Notes {
-    pub client: Client,
+    ctx: Mutex<AppContext>,
 }
 
 impl Notes {
-    pub fn new(client: Client) -> Notes {
-        Notes { client }
+    /// Open Notes' store in `home`, registering Notes with `folder` as where
+    /// its program lives (`None`: leave the registration's folder as it is).
+    pub fn open(home: &Home, folder: Option<&Path>) -> Result<Notes, Value> {
+        let manifest: Value = serde_json::from_str(crate::MANIFEST)
+            .map_err(|e| fail("internal", format!("manifest.json: {e}")))?;
+        let manifest = core(Manifest::from_json(manifest))?;
+        Ok(Notes {
+            ctx: Mutex::new(core(home.app(&manifest, folder))?),
+        })
+    }
+
+    fn ctx(&self) -> MutexGuard<'_, AppContext> {
+        self.ctx.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The person's preferences: language, theme, text size, motion, contrast.
+    pub fn prefs(&self) -> Outcome {
+        core(self.ctx().prefs())
+    }
+
+    /// Changes whenever a preference changes; the window polls it.
+    pub fn prefs_version(&self) -> i64 {
+        self.ctx().prefs_version().unwrap_or(0)
     }
 
     fn activity(&self, id: &str, title: &str, kind: &str) {
-        // Recent items in the launcher: the title, never the body. Failing to
-        // announce never fails the save.
-        let _ = self.client.publish(
-            "activity",
-            &json!({ "id": id, "title": title, "kind": kind }),
-        );
+        // Recent items: the title, never the body. Failing to record never
+        // fails the save.
+        let _ = self.ctx().activity(id, title, kind);
     }
 
     fn index(&self, id: &str, note: &Value) {
-        let _ = self.client.index(
+        let _ = self.ctx().index(
             id,
             note["title"].as_str().unwrap_or_default(),
             note["body"].as_str().unwrap_or_default(),
@@ -158,17 +176,22 @@ impl Notes {
         );
     }
 
+    fn find(&self, id: &str) -> Result<Option<Value>, Value> {
+        let found = core(self.ctx().get(COLLECTION, id))?;
+        Ok((!found.is_null()).then_some(found))
+    }
+
+    fn page(&self, after: Option<&str>) -> Result<Vec<Value>, Value> {
+        let page = core(self.ctx().list(COLLECTION, after, 1000))?;
+        Ok(page["items"].as_array().cloned().unwrap_or_default())
+    }
+
     /// Every note's metadata (no bodies), newest first.
     pub fn list(&self) -> Outcome {
         let mut out = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut params = json!({ "collection": COLLECTION, "limit": 1000 });
-            if let Some(a) = &after {
-                params["after"] = json!(a);
-            }
-            let page = sdk(self.client.call("storage.list", params))?;
-            let items = page["items"].as_array().cloned().unwrap_or_default();
+            let items = self.page(after.as_deref())?;
             for item in &items {
                 let doc = &item["doc"];
                 out.push(json!({
@@ -189,7 +212,8 @@ impl Notes {
     }
 
     pub fn get(&self, id: &str) -> Outcome {
-        let found = sdk(self.client.get(COLLECTION, id))?
+        let found = self
+            .find(id)?
             .ok_or_else(|| fail("not_found", "no such note"))?;
         let mut note = found["doc"].clone();
         note["id"] = json!(id);
@@ -215,7 +239,7 @@ impl Notes {
             "title": title, "body": body, "notebook": notebook.trim(),
             "tags": tags(body), "created": created, "updated": now_ms(),
         });
-        let written = sdk(self.client.put(COLLECTION, id, &note, rev))?;
+        let written = core(self.ctx().put(COLLECTION, id, &note, rev))?;
         self.index(id, &note);
         Ok(json!({ "id": id, "rev": written["rev"] }))
     }
@@ -224,14 +248,14 @@ impl Notes {
         let id = new_id();
         let out = self.write(&id, title, body, notebook, now_ms(), Some(0))?;
         self.activity(&id, title.trim(), "created");
-        let _ = self.client.publish("note.created", &json!({ "id": id }));
         Ok(out)
     }
 
     /// Save with the revision the editor loaded; a stale save is refused with
     /// `conflict` so two windows never silently overwrite each other.
     pub fn save(&self, id: &str, title: &str, body: &str, notebook: &str, rev: u64) -> Outcome {
-        let existing = sdk(self.client.get(COLLECTION, id))?
+        let existing = self
+            .find(id)?
             .ok_or_else(|| fail("not_found", "no such note"))?;
         let created = existing["doc"]["created"].as_u64().unwrap_or_else(now_ms);
         let out = self.write(id, title, body, notebook, created, Some(rev))?;
@@ -240,11 +264,8 @@ impl Notes {
     }
 
     pub fn delete(&self, id: &str, rev: u64) -> Outcome {
-        sdk(self.client.call(
-            "storage.delete",
-            json!({ "collection": COLLECTION, "id": id, "rev": rev }),
-        ))?;
-        let _ = self.client.call("search.remove", json!({ "id": id }));
+        core(self.ctx().delete(COLLECTION, id, Some(rev)))?;
+        let _ = self.ctx().unindex(id);
         Ok(json!({ "deleted": id }))
     }
 
@@ -262,7 +283,7 @@ impl Notes {
             return Err(fail("invalid_params", "a date is YYYY-MM-DD"));
         }
         let id = format!("daily-{date}");
-        if sdk(self.client.get(COLLECTION, &id))?.is_none() {
+        if self.find(&id)?.is_none() {
             let body = format!("# {date}\n\n");
             self.write(&id, date, &body, "Daily", now_ms(), Some(0))?;
             self.activity(&id, date, "created");
@@ -288,18 +309,14 @@ impl Notes {
 
     /// Notes that link to `id`'s title.
     pub fn backlinks(&self, id: &str) -> Outcome {
-        let target = sdk(self.client.get(COLLECTION, id))?
+        let target = self
+            .find(id)?
             .ok_or_else(|| fail("not_found", "no such note"))?;
         let title = fold(target["doc"]["title"].as_str().unwrap_or_default());
         let mut out = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut params = json!({ "collection": COLLECTION, "limit": 1000 });
-            if let Some(a) = &after {
-                params["after"] = json!(a);
-            }
-            let page = sdk(self.client.call("storage.list", params))?;
-            let items = page["items"].as_array().cloned().unwrap_or_default();
+            let items = self.page(after.as_deref())?;
             for item in &items {
                 let body = item["doc"]["body"].as_str().unwrap_or_default();
                 if item["id"] != id && links(body).iter().any(|l| fold(l) == title) {
@@ -318,10 +335,13 @@ impl Notes {
     }
 
     pub fn search(&self, query: &str) -> Outcome {
-        let hits = sdk(self.client.search(query))?;
-        Ok(
-            json!({ "hits": hits.into_iter().filter(|h| h["app"] == "org.eon.office.notes").collect::<Vec<_>>() }),
-        )
+        let hits = core(self.ctx().search(query, 50))?;
+        Ok(json!({ "hits": hits["hits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|h| h["app"] == crate::APP_ID)
+            .collect::<Vec<_>>() }))
     }
 
     /// Import a folder of Markdown files (an Obsidian-style vault): one note
@@ -371,42 +391,21 @@ impl Notes {
         )
     }
 
-    /// Answer what other applications ask Notes for: `open`, `focus`,
-    /// `note.create`. Returns what the window should show, if anything.
-    pub fn answer(&self, id: &Value, method: &str, params: &Value) -> Option<Value> {
-        let (answer, show) = match method {
-            "open" => {
-                let note = params["id"].as_str().unwrap_or_default();
-                match self.get(note) {
-                    Ok(_) => (Ok(json!({ "opened": note })), Some(json!({ "open": note }))),
-                    Err(e) => (Err(e), None),
-                }
-            }
-            "focus" => (
-                Ok(json!({ "focused": true })),
-                Some(json!({ "focus": true })),
-            ),
-            "note.create" => match self.create(
-                params["title"].as_str().unwrap_or("Untitled"),
-                params["body"].as_str().unwrap_or_default(),
-                params["notebook"].as_str().unwrap_or_default(),
-            ) {
-                Ok(created) => {
-                    let note = created["id"].clone();
-                    (Ok(created), Some(json!({ "open": note })))
-                }
-                Err(e) => (Err(e), None),
-            },
-            _ => (Err(fail("unknown_method", "not provided")), None),
-        };
-        let reply = answer.map_err(|e| {
-            eon_office_sdk::AppError::new(
-                e["code"].as_str().unwrap_or("error"),
-                e["message"].as_str().unwrap_or_default(),
-            )
-        });
-        let _ = self.client.answer(id, reply);
-        show
+    /// What the window should do for an `eon-office://` link it was started
+    /// with or handed: open a note by id, or come forward. Anything else —
+    /// another application's link, an unknown note, a non-link — is nothing.
+    pub fn link(&self, text: &str) -> Option<Value> {
+        let link = eon_links::parse(text)?;
+        if link.app != crate::APP_ID {
+            return None;
+        }
+        if link.item.is_empty() {
+            return Some(json!({ "focus": true }));
+        }
+        self.find(&link.item)
+            .ok()
+            .flatten()
+            .map(|_| json!({ "open": link.item }))
     }
 }
 

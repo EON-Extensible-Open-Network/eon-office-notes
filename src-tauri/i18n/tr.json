@@ -33,9 +33,8 @@
   "reload": "Yeniden yükle",
   "link.missing": "“{title}” adında bir not yok. Oluşturulsun mu?",
   "link.create": "“{title}” notunu oluştur",
-  "not.installed": "EON Notes henüz EON Office'e kurulu değil. EON Launcher'ı açın, bu programın yanındaki manifest.json dosyasından kurun ve izinlerini verin.",
-  "no.core": "EON Office çalışmıyor. Önce EON Launcher'ı başlatın.",
   "retry": "Yeniden dene",
   "error": "Bir şeyler ters gitti: {reason}",
-  "count": "{count} not"
+  "count": "{count} not",
+  "open.failed": "EON Notes notlarınızı açamadı: {reason}"
 }

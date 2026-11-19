@@ -47,4 +47,4 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The SDK is pinned to a commit of our own repository (src-tauri/Cargo.toml).
-allow-git = ["https://github.com/EON-Extensible-Open-Network/eon-office-sdk"]
+allow-git = ["https://github.com/EON-Extensible-Open-Network/eon-office-core"]

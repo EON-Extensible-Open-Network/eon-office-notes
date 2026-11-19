@@ -13,11 +13,13 @@ the organisation-wide policy is
   Markdown; raw HTML in a note is shown as text. External links are shown, never followed;
   the interface has no network (CI fails the build on `fetch`, `XMLHttpRequest`,
   `WebSocket`, `EventSource`, and on `innerHTML`).
-- **Notes holds its own token only** (from the core's launch or its token file) and asks
-  for four capabilities; it cannot read other applications' data.
+- **Notes opens its own store only** (`apps/org.eon.office.notes/data.sqlite`) and declares
+  four capabilities; the library refuses anything else it might try.
+- **Links are ids, never commands.** An `eon-office://` link can only open an existing note
+  or bring the window forward; anything else in it is ignored.
 - **The DevTools port is debug-only** (`EON_WEBVIEW_ARGS`, ignored by release builds).
 - Known, tracked: the Linux build inherits Tauri's GTK 3 stack and its `glib` advisory
   (GHSA-wrw7-89jp-8q8g), as described in eon-office-launcher's `SECURITY.md`.
 
-The core's threat model:
+The library's threat model, including what capabilities are and are not:
 [`eon-office-core/SECURITY.md`](https://github.com/EON-Extensible-Open-Network/eon-office-core/blob/main/SECURITY.md).

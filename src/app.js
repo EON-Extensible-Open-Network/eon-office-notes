@@ -207,6 +207,7 @@ async function openNote(id, focusBody = true) {
     current = { id, rev: note.rev, title: note.title, body: note.body, notebook: note.notebook || "", tags: note.tags || [] };
     $("editor").hidden = false;
     $("empty").hidden = true;
+    document.querySelector("aside").hidden = false;
     $("note-title").value = note.title;
     $("note-notebook").value = note.notebook || "";
     $("note-body").value = note.body;
@@ -309,6 +310,10 @@ $("delete-yes").addEventListener("click", async () => {
     current = null;
     dirty = false;
     $("editor").hidden = true;
+    // The side panel describes the open note; with none open it says nothing.
+    document.querySelector("aside").hidden = true;
+    $("backlinks").replaceChildren();
+    $("tags").replaceChildren();
     await refreshList();
     $("note-list").focus();
   } catch (e) {
@@ -355,19 +360,20 @@ $("import-form").addEventListener("submit", async (event) => {
   }
 });
 
-// ---- the core's requests -------------------------------------------------------------
+// ---- links from other applications, and preference changes ---------------------------
 
-listen("show", async ({ payload }) => {
+async function show(payload) {
+  if (!payload) return;
   await refreshList();
-  if (payload.open) openNote(payload.open);
-});
+  if (payload.open) await openNote(payload.open);
+}
+listen("show", ({ payload }) => show(payload));
 listen("prefs-changed", async () => {
   await applyPrefs();
   // Text the page builds itself is re-built in the new language.
   await refreshList();
   if (current) renderSide({ tags: current.tags });
 });
-listen("save-and-quit", save);
 window.addEventListener("blur", () => { if (dirty) save(); });
 
 // ---- start -----------------------------------------------------------------------------
@@ -380,7 +386,9 @@ async function start() {
     $("banner").hidden = true;
     $("layout").hidden = false;
     await refreshList();
-    if (notes.length && !current) await openNote(notes[0].id, false);
+    const first = await invoke("initial");
+    if (first && first.open) await openNote(first.open, false);
+    else if (notes.length && !current) await openNote(notes[0].id, false);
     // Only take focus if the person has not already put it somewhere (they
     // may have pressed Ctrl+N while the list was loading).
     if (document.activeElement === document.body || document.activeElement === null) $("note-list").focus();
@@ -388,7 +396,7 @@ async function start() {
   } catch (e) {
     $("layout").hidden = true;
     $("banner").hidden = false;
-    $("banner-text").textContent = e && e.code === "not_installed" ? t("not.installed") : e && e.code === "no_core" ? t("no.core") : t("error", { reason: reason(e) });
+    $("banner-text").textContent = t("open.failed", { reason: reason(e) });
   }
 }
 $("retry").addEventListener("click", start);

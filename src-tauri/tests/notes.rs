@@ -4,8 +4,9 @@
 // Additional permission under GNU GPL version 3 section 7:
 // see LICENSE-EXCEPTION.md (EON Module ABI Exception 1.0).
 
-//! EON Notes against a real core: the roadmap's acceptance criteria that a
-//! machine can check. Needs `EON_OFFICE_CORE_BIN`.
+//! EON Notes on the EON Office library, in a home folder of its own: the
+//! roadmap's acceptance criteria that a machine can check. Nothing else has
+//! to be installed or running.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,64 +18,30 @@
 )]
 
 use eon_notes::notes::Notes;
-use eon_office_sdk::{Client, Incoming};
-use serde_json::{json, Value};
+use eon_office_core::Home;
+use serde_json::json;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-struct Core {
-    child: Child,
-    home: PathBuf,
-}
+struct TempHome(PathBuf);
 
-impl Drop for Core {
+impl Drop for TempHome {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.home);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-fn start(name: &str) -> (Core, Client, Notes) {
-    let binary = std::env::var_os("EON_OFFICE_CORE_BIN").expect("set EON_OFFICE_CORE_BIN");
-    let home = std::env::temp_dir().join(format!("eon-notes-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    let child = Command::new(binary)
-        .args(["serve", "--home"])
-        .arg(&home)
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while eon_office_sdk::endpoint(&home).is_err() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let owner = Client::connect_owner(&home).unwrap();
-    let manifest: Value = serde_json::from_str(eon_notes::MANIFEST).unwrap();
-    owner
-        .call(
-            "apps.install",
-            json!({ "manifest": manifest, "grant": manifest["capabilities"] }),
-        )
-        .unwrap();
-    let token =
-        std::fs::read_to_string(home.join("apps").join(eon_notes::APP_ID).join("token")).unwrap();
-    let client = Client::connect(
-        &eon_office_sdk::endpoint(&home).unwrap(),
-        Some(eon_notes::APP_ID),
-        token.trim(),
-    )
-    .unwrap();
-    (Core { child, home }, owner, Notes::new(client))
+fn start(name: &str) -> (TempHome, Home, Notes) {
+    let dir = std::env::temp_dir().join(format!("eon-notes-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = Home::open(&dir).unwrap();
+    let notes = Notes::open(&home, None).unwrap();
+    (TempHome(dir), home, notes)
 }
 
 #[test]
-#[ignore = "needs EON_OFFICE_CORE_BIN"]
 fn notes_links_daily_search_and_conflicts() {
-    let (_core, owner, notes) = start("basic");
+    let (_dir, home, notes) = start("basic");
     let trip = notes
         .create("İstanbul Trip", "Flights and #travel plans.", "Personal")
         .unwrap();
@@ -96,23 +63,10 @@ fn notes_links_daily_search_and_conflicts() {
 
     // Two windows: the second save on a stale revision is refused, not merged silently.
     let rev = note["rev"].as_u64().unwrap();
-    notes
-        .save(
-            list["id"].as_str().unwrap(),
-            "Packing",
-            "first",
-            "Personal",
-            rev,
-        )
-        .unwrap();
+    let id = list["id"].as_str().unwrap();
+    notes.save(id, "Packing", "first", "Personal", rev).unwrap();
     let stale = notes
-        .save(
-            list["id"].as_str().unwrap(),
-            "Packing",
-            "second",
-            "Personal",
-            rev,
-        )
+        .save(id, "Packing", "second", "Personal", rev)
         .unwrap_err();
     assert_eq!(stale["code"], "conflict");
 
@@ -125,52 +79,84 @@ fn notes_links_daily_search_and_conflicts() {
     );
     assert!(notes.daily("19.11.2026").is_err());
 
-    // Search through the core, Turkish letters folded.
+    // Search, Turkish letters folded.
     let hits = notes.search("ISTANBUL").unwrap();
     assert!(hits["hits"]
         .as_array()
         .unwrap()
         .iter()
         .any(|h| h["id"] == trip["id"]));
+    assert_eq!(notes.list().unwrap()["notes"].as_array().unwrap().len(), 3);
 
-    // The launcher's recent items get titles from Notes' activity events.
-    let all = notes.list().unwrap();
-    assert_eq!(all["notes"].as_array().unwrap().len(), 3);
+    // The person's recent list gets titles, never bodies.
+    let recent = home.shared().unwrap().recent(10).unwrap();
+    let first = &recent["items"][0];
+    assert_eq!(first["app"], eon_notes::APP_ID);
+    assert!(recent.to_string().contains("Packing"));
+    assert!(!recent.to_string().contains("passport"));
 
-    // Another application (here the owner) asks Notes to create a note through the core.
-    let answering = std::thread::spawn(move || {
-        while let Some(message) = notes.client.next(Some(Duration::from_secs(10))) {
-            if let Incoming::Invoke {
-                id, method, params, ..
-            } = message
-            {
-                return (notes.answer(&id, &method, &params), notes);
-            }
-        }
-        panic!("no invoke");
-    });
-    let created = owner
-        .call_app(
-            eon_notes::APP_ID,
-            "note.create",
-            json!({ "title": "From Tasks", "body": "hi" }),
-        )
+    // Deleting removes it from search too.
+    let fresh = notes.get(trip_id).unwrap();
+    notes
+        .delete(trip_id, fresh["rev"].as_u64().unwrap())
         .unwrap();
-    let (show, notes) = answering.join().unwrap();
-    assert_eq!(show.unwrap()["open"], created["id"]);
-    assert_eq!(
-        notes.get(created["id"].as_str().unwrap()).unwrap()["title"],
-        "From Tasks"
-    );
+    assert!(!notes.search("ISTANBUL").unwrap()["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["id"] == trip["id"]));
 }
 
 #[test]
-#[ignore = "needs EON_OFFICE_CORE_BIN"]
+fn a_link_argument_opens_the_note() {
+    let (_dir, _home, notes) = start("link");
+    let note = notes.create("Linked", "body", "").unwrap();
+    let id = note["id"].as_str().unwrap();
+    assert_eq!(
+        notes.link(&format!("eon-office://org.eon.office.notes/{id}")),
+        Some(json!({ "open": id }))
+    );
+    // The app's own address with no item brings the window forward.
+    assert_eq!(
+        notes.link("eon-office://org.eon.office.notes"),
+        Some(json!({ "focus": true }))
+    );
+    // Another application's link, an unknown note, or not a link: nothing to show.
+    assert_eq!(notes.link("eon-office://org.eon.office.tasks/x"), None);
+    assert_eq!(notes.link("eon-office://org.eon.office.notes/nope"), None);
+    assert_eq!(notes.link("--selftest"), None);
+}
+
+#[test]
+fn notes_work_with_no_shared_file_features() {
+    // A shared file from a newer EON Office: notes still open, save and list.
+    let dir = std::env::temp_dir().join(format!("eon-notes-newer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = Home::open(&dir).unwrap();
+    drop(home.shared().unwrap());
+    rusqlite_set_version(&dir.join("shared.sqlite"), 99);
+    let notes = Notes::open(&home, None).unwrap();
+    let made = notes.create("Still here", "text", "").unwrap();
+    assert_eq!(
+        notes.get(made["id"].as_str().unwrap()).unwrap()["title"],
+        "Still here"
+    );
+    assert_eq!(notes.list().unwrap()["notes"].as_array().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn rusqlite_set_version(path: &std::path::Path, version: i64) {
+    // The library's own file format: set the schema version by hand.
+    let conn = eon_office_core::db::open(path, eon_office_core::db::Schema::Shared).unwrap();
+    conn.pragma_update(None, "user_version", version).unwrap();
+}
+
+#[test]
 fn a_thousand_note_vault_imports_with_its_links() {
-    let (core, _owner, notes) = start("vault");
+    let (dir, _home, notes) = start("vault");
     // A vault shaped like a real one: folders, aliases, heading links, a few
     // links to notes that do not exist (they must count as unresolved).
-    let vault = core.home.join("vault");
+    let vault = dir.0.join("vault");
     let mut rng = 0x2545_f491_4f6c_dd1du64;
     let mut next = |n: u64| {
         rng ^= rng << 13;

@@ -33,9 +33,8 @@
   "reload": "Reload",
   "link.missing": "There is no note called “{title}”. Create it?",
   "link.create": "Create “{title}”",
-  "not.installed": "EON Notes is not installed in EON Office yet. Open EON Launcher and install it from the manifest.json beside this program, then allow its permissions.",
-  "no.core": "EON Office is not running. Start EON Launcher first.",
   "retry": "Try again",
   "error": "Something went wrong: {reason}",
-  "count": "{count} notes"
+  "count": "{count} notes",
+  "open.failed": "EON Notes could not open your notes: {reason}"
 }
